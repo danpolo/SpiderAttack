@@ -1,7 +1,9 @@
 import sys
-import math
+import itertools
 from dataclasses import dataclass
 import numpy
+
+DEBUG = True
 
 MONSTER_TEAM = 0
 MY_TEAM = 1
@@ -21,6 +23,42 @@ MONSTER_SPEED = 400
 HERO_SPEED = 800
 RADIUS_TO_TARGET_BASE = 5000
 
+# Spells
+SPELL_COST = 10
+
+SPELL_WIND_RANGE = 1280
+SPELL_WIND_STRENGTH = 2200
+
+SPELL_SHIELD_RANGE = 2200
+SPELL_SHIELD_EFFECT_PERIOD = 12  # measured in turns
+
+SPELL_CONTROL_RANGE = 2200
+
+
+class OutputFormatter:
+    def __init__(self):
+        self.actions = {}
+
+    def action_move(self, hero: 'Hero', target_location: 'Point'):
+        self.actions[hero.hero_id] = f"MOVE {target_location.x} {target_location.y}"
+
+    def action_wait(self, hero: 'Hero'):
+        self.actions[hero.hero_id] = "WAIT"
+
+    def action_control(self, hero: 'Hero', entity_id: int, target_location: 'Point'):
+        self.actions[hero.hero_id] = f'SPELL CONTROL {entity_id} {target_location.x} {target_location.y}'
+
+    def action_wind(self, hero: 'Hero', target_location: 'Point'):
+        self.actions[hero.hero_id] = f'SPELL WIND {target_location.x} {target_location.y}'
+
+    def action_shield(self, hero: 'Hero', entity_id: int):
+        self.actions[hero.hero_id] = f'SPELL SHIELD {entity_id}'
+
+    def perform_action(self):
+        actions = sorted(self.actions.items(), key=lambda action: action[0])  # List of tuples
+        for _, command in actions:
+            print(command)
+
 
 class Point:
     def __init__(self, x, y):
@@ -31,7 +69,7 @@ class Point:
     def __repr__(self):
         return str((self.x, self.y))
 
-    def get_distance_to(self, other):
+    def get_distance_to(self, other) -> float:
         return numpy.linalg.norm(self.array - other.array)
 
     def __sub__(self, other):
@@ -46,6 +84,8 @@ BOTTOM_RIGHT = Point(17630, 9000)
 
 
 class Game:
+    formatter = OutputFormatter()
+
     def __init__(self, base_location, heroes_per_player):
         self.heroes_per_player = heroes_per_player
 
@@ -76,17 +116,22 @@ class Game:
         self.heroes = list(filter(lambda entity: isinstance(entity, Hero), entities))
         self.monsters = list(filter(lambda entity: isinstance(entity, Monster), entities))
 
-    def make_turn(self):
-        if self.monsters:
-            for my_hero in self.get_my_heroes():
-                scary_monster = my_hero.get_most_dangerous_monster(self.monsters, self.my_base_location)
-                debug(f"Scary monster for Hero {my_hero.hero_id}: {scary_monster}")
-                my_hero.move(scary_monster.location)
+    def handle_no_monsters(self):
+        for hero, point in self.get_defensive_positions():
+            self.formatter.action_move(hero, point)
 
+    def make_turn(self):
+        my_heroes = self.get_my_heroes()
+        if not self.monsters:  # go to defensive positions if there are no monsters
+            self.handle_no_monsters()
         else:
-            defensive_positions = self.get_defensive_positions()
-            for my_hero in self.get_my_heroes():
-                my_hero.move(defensive_positions[my_hero.hero_id])
+            if self.my_mana < SPELL_COST:
+                for hero in my_heroes:
+                    scary_monster = hero.get_most_dangerous_monster(self.monsters, self.my_base_location)
+                    debug(f"Scary monster for Hero {hero.hero_id}: {scary_monster}")
+                    self.formatter.action_move(hero, scary_monster.location)
+
+        self.formatter.perform_action()
 
     def get_targeting_monsters(self):
         return filter(lambda monster: monster.target == TARGETING_ME, self.monsters)
@@ -94,9 +139,34 @@ class Game:
     def get_my_heroes(self):
         return sorted(filter(lambda hero: hero.team == MY_TEAM, self.heroes), key=lambda hero: hero.hero_id)
 
+    def get_optimal_combination_heroes_to_points(self, heroes: list, points: list) -> list[tuple['Hero', Point]]:
+        all_combinations = []
+
+        list1_permutations = itertools.permutations(heroes, len(points))
+        for each_permutation in list1_permutations:
+            zipped = zip(each_permutation, points)
+            all_combinations.append(list(zipped))
+
+        def key_func(combinations: list[tuple[Hero, Point]]) -> float:
+            """
+            total score of a single combination, measured as the sum of distances from heroes to points
+            :param combinations: list[tuple[Hero, Point]]
+            :return: float
+            """
+            score = 0
+            for combination in combinations:
+                score += combination[0].get_distance_to(combination[1])
+            return score
+
+        return min(all_combinations, key=key_func)
+
     def get_defensive_positions(self):
+        my_heroes = self.get_my_heroes()
         defensive_positions = [Point(3535, 3535), Point(1500, 4850), Point(4850, 1500)]
-        return list(map(lambda location: abs(location - self.my_base_location), defensive_positions))
+        defensive_positions_relative_to_base = list(
+            map(lambda location: abs(location - self.my_base_location), defensive_positions))
+
+        return self.get_optimal_combination_heroes_to_points(my_heroes, defensive_positions_relative_to_base)
 
 
 class Hero:
@@ -111,9 +181,6 @@ class Hero:
         return "\nHERO: " + "\n\t".join(
             map(lambda attribute: f"{attribute[0]} = {attribute[1]}", self.__dict__.items()))
 
-    def do(self, command):
-        print(command)  # + f" {self.hero_id}: " + command)
-
     def get_distance_to(self, other_location: Point):
         return self.location.get_distance_to(other_location)
 
@@ -124,13 +191,7 @@ class Hero:
 
         return base_proximity_factor + hero_proximity_factor + is_targeting_factor
 
-    def move(self, target: Point):
-        self.do(f"MOVE {target.x} {target.y}")
-
-    def wait(self):
-        self.do("WAIT")
-
-    def get_most_dangerous_monster(self, monsters, my_base_location):
+    def get_most_dangerous_monster(self, monsters: list['Monster'], my_base_location: Point) -> 'Monster':
         return max(monsters, key=lambda monster: self.get_monster_value(monster, my_base_location))
 
 
@@ -142,7 +203,7 @@ class Monster:
     is_controlled: bool
     hp: int
     trajectory: Point
-    target: (int, int)
+    target: tuple[int, int]
 
     def __repr__(self):
         return "\nMONSTER: " + "\n\t".join(
@@ -152,8 +213,9 @@ class Monster:
         return self.location.get_distance_to(other_location)
 
 
-def debug(s):
-    sys.stderr.write(f'{s}\n')
+def debug(*args):
+    if DEBUG:
+        sys.stderr.write(f'{args=}\n')
 
 
 def build_game_from_input():
