@@ -122,16 +122,24 @@ class Game:
 
     def perform_simple_attack(self):
         for hero in self.get_my_heroes():
-            scary_monster = hero.get_most_dangerous_monster(self.monsters, self.my_base_location)
+            scary_monster = hero.get_most_dangerous_monster(self.get_dangerous_monsters((TARGETING_ME, ROAMING_TOWARDS_ME)), self.my_base_location)
             debug(f"Scary monster for Hero {hero.hero_id}: {scary_monster}")
             self.formatter.action_move(hero, scary_monster.location)
 
     def make_turn(self):
-        if not self.monsters:  # go to defensive positions if there are no monsters
+        if not self.get_dangerous_monsters((TARGETING_ME, ROAMING_TOWARDS_ME)):  # go to defensive positions if there are no monsters
             self.handle_no_monsters()
         else:
-            self.perform_simple_attack()
-
+            assigned_heroes_for_control_spell = self.assign_heroes_to_monsters(
+                self.get_monsters_near_heroes_dict(SPELL_CONTROL_RANGE))
+            if not assigned_heroes_for_control_spell:
+                self.perform_simple_attack()
+            else:
+                for hero_id, monster_id in assigned_heroes_for_control_spell.items():
+                    if monster_id is None:
+                        continue
+                    self.formatter.action_control(self.get_entity_from_id(hero_id), monster_id,
+                                                  self.enemy_base_location)
         self.formatter.perform_action()
 
     def get_targeting_monsters(self):
@@ -169,6 +177,46 @@ class Game:
 
         return self.get_optimal_combination_heroes_to_points(my_heroes, defensive_positions_relative_to_base)
 
+    def assign_heroes_to_monsters(self, monsters_near_heroes_dict: dict) -> dict:
+        all_combinations = itertools.product(
+            *monsters_near_heroes_dict.values())  # all possible combinations of monsters
+        legal_combinations = []
+        for potential_combination in all_combinations:
+            hero_id_to_potential_monster = dict()
+            for hero_id, monster in enumerate(potential_combination):
+                hero_id_to_potential_monster[hero_id] = monster
+            used_monsters_cache = []
+            for hero_id, monster in hero_id_to_potential_monster.items():
+                if monster not in used_monsters_cache:
+                    used_monsters_cache.append(monster)
+                else:
+                    hero_id_to_potential_monster[hero_id] = None
+            legal_combinations.append(hero_id_to_potential_monster)
+
+        # returns the best option based on the highest amount of monsters assigned to heroes
+        # im sorry
+        spells_to_cast_in_a_turn = min(self.my_mana // SPELL_COST, self.heroes_per_player)  # Rounded to the closest int
+        legal_combinations = filter(lambda combination: len(
+            [val for val in combination.values() if val is not None]) <= spells_to_cast_in_a_turn, legal_combinations)
+        return max(legal_combinations, key=lambda lambda_d: len([val for val in lambda_d.values() if val is not None]),
+                   default={})
+
+    def get_monsters_near_heroes_dict(self, spell_range):
+        return_dict = dict()
+        for hero in self.get_my_heroes():
+            return_dict[hero.hero_id] = [monster.id for monster in
+                                         hero.get_monsters_in_spell_range(self.get_dangerous_monsters((TARGETING_ME, ROAMING_TOWARDS_ME, CLUELESS)), spell_range)]
+
+        return return_dict
+
+    def get_entity_from_id(self, entity_id: int) -> ['Hero', 'Monster', None]:
+        return next(filter(lambda entity: entity.hero_id == entity_id, self.get_my_heroes() + self.monsters), None)
+
+    def get_dangerous_monsters(self, target: tuple):
+        return list(filter(
+            lambda monster: not monster.is_controlled and monster.target in target,
+            self.monsters))
+
 
 class Hero:
     def __init__(self, hero_id, team, location, shield_life, is_controlled):
@@ -185,7 +233,13 @@ class Hero:
     def get_distance_to(self, other_location: Point):
         return self.location.get_distance_to(other_location)
 
-    def get_monster_value(self, monster, my_base_location: Point):
+    def get_monster_value(self, monster, my_base_location: Point) -> int:
+        """
+        Higher value -> more dangerous
+        :param monster: Monster Object
+        :param my_base_location: Point
+        :return: int
+        """
         base_proximity_factor = monster.get_distance_to(my_base_location) * -1
         hero_proximity_factor = self.get_distance_to(monster.location) * -1
         is_targeting_factor = (monster.target == TARGETING_ME) * 1000
@@ -193,7 +247,15 @@ class Hero:
         return base_proximity_factor + hero_proximity_factor + is_targeting_factor
 
     def get_most_dangerous_monster(self, monsters: list['Monster'], my_base_location: Point) -> 'Monster':
-        return max(monsters, key=lambda monster: self.get_monster_value(monster, my_base_location))
+
+        return max(monsters, key=lambda monster: self.get_monster_value(monster, my_base_location), default=None)
+
+    def get_monsters_in_spell_range(self, monsters: list['Monster'], spell_range: int) -> list['Monster']:
+        return_value = []
+        for monster in monsters:
+            if monster.get_distance_to(self.location) <= spell_range:
+                return_value.append(monster)
+        return return_value
 
 
 @dataclass
@@ -213,10 +275,13 @@ class Monster:
     def get_distance_to(self, other_location: Point):
         return self.location.get_distance_to(other_location)
 
+    def is_in_base(self):
+        return self.target == TARGETING_ME
 
-def debug(*args):
+
+def debug(*args, **kwargs):
     if DEBUG:
-        sys.stderr.write(f'{args=}\n')
+        sys.stderr.write(f'{args=} {kwargs=}\n')
 
 
 def build_game_from_input():
