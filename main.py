@@ -120,16 +120,17 @@ class Game:
         for hero, point in self.get_defensive_positions():
             self.formatter.action_move(hero, point)
 
+    def perform_simple_attack(self):
+        for hero in self.get_my_heroes():
+            scary_monster = hero.get_most_dangerous_monster(self.monsters, self.my_base_location)
+            debug(f"Scary monster for Hero {hero.hero_id}: {scary_monster}")
+            self.formatter.action_move(hero, scary_monster.location)
+
     def make_turn(self):
-        my_heroes = self.get_my_heroes()
         if not self.monsters:  # go to defensive positions if there are no monsters
             self.handle_no_monsters()
         else:
-            if self.my_mana < SPELL_COST:
-                for hero in my_heroes:
-                    scary_monster = hero.get_most_dangerous_monster(self.monsters, self.my_base_location)
-                    debug(f"Scary monster for Hero {hero.hero_id}: {scary_monster}")
-                    self.formatter.action_move(hero, scary_monster.location)
+            self.perform_simple_attack()
 
         self.formatter.perform_action()
 
